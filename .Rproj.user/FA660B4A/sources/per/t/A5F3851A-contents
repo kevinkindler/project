@@ -1,0 +1,185 @@
+library(data.table)
+library(lubridate)
+library(myRFMpackage)
+library(profvis)
+library(microbenchmark)
+library(fastmatch)
+library(compiler)
+library(doParallel)
+library(foreach)
+
+# profvis package to visualize the time spend on the code.
+#profvis({
+
+# Profile your code for the RFM function
+Rprof("RFM_function.r")
+
+RFMfunction <- function(data, weight_recency=1, weight_frequency=1, weight_monetary=1){
+   
+  # adjusting values to ensure that the weights add up to one 
+  weight_recency2 <- weight_recency/sum(weight_recency, weight_frequency, weight_monetary)
+  weight_frequency2 <- weight_frequency/sum(weight_recency, weight_frequency, weight_monetary)
+  weight_monetary2 <- weight_monetary/sum(weight_recency, weight_frequency, weight_monetary)
+  
+  print("weights are calculated")
+  
+  # RFM measures
+  max.Date <- max(data$TransDate)
+  
+  temp <- data[,list(
+    recency = as.numeric(max.Date - max(TransDate)),
+    frequency = .N,
+    monetary = mean(PurchAmount)),
+    by=Customer
+  ]
+  
+  print("RFM Measure done")
+  
+  # RFM scores
+  temp <- temp[,list(Customer,
+                     recency = as.numeric(cut2(-recency, g=3)),
+                     frequency = as.numeric(cut2(frequency, g=3)),
+                     monetary = as.numeric(cut2(monetary, g=3)))]
+  
+  # Overall RFM score
+  temp[,finalscore:=weight_recency2*recency+weight_frequency2*frequency+weight_monetary2*monetary]  
+  
+  print("Overall RFM Measure done")
+  
+  # RFM group
+  temp[,group:=round(finalscore)]
+  
+  # Return final table
+  return(temp)
+  
+}
+
+#getwd()
+#setwd("/Users/kevin-kindlerhotmail.com/Documents/uzh/FS24/R/day4")
+
+transactions <- fread("transactions.csv")
+transactions$TransDate <- as_datetime(dmy(transactions$TransDate))
+rfmValues = RFMfunction(transactions, 20, 20, 60)
+rfmValues
+
+Rprof()
+summaryRprof("RFM_function.r")
+#})
+
+# Look at the code of the RFM model. 
+#How much time do you save by reading in the data as data.table instead of data.frame?
+#time data.frame
+# elapsed tells you how much time has passed since the function was called.
+system.time({
+  transactions <- read.csv("transactions.csv")
+})
+
+#time data.table
+system.time({
+  transactions <- fread("transactions.csv")
+})
+
+
+
+# Find two ways to count the number of (unique) transactions per customer from the transactions data. 
+# Compare which solution is faster. (Hint: microbenchmark() is part of the package microbenchmark.)
+
+# First way to count the number of transactions per customer
+transactions[, .N, by=Customer]
+system.time({
+  transactions[, .N, by=Customer]
+})
+
+
+# Second way to count the number of transactions per customer
+transactions[, .(unique_transactions_count = length(unique(TransID))), by = Customer]
+system.time({
+  transactions[, .(unique_transactions_count = length(unique(TransID))), by = Customer]
+})
+
+#microbenchmark
+microbenchmark(transactions[, .N, by=Customer], transactions[, .(unique_transactions_count = length(unique(TransID))), by = Customer])
+
+# use match()
+# Example vectors
+table_vector <- c("apple", "banana", "orange", "grape")
+search_vector <- c("orange", "banana", "apple", "kiwi")
+
+# Using match() to find positions
+positions <- match(search_vector, table_vector)
+
+print(positions)
+
+# find a faster implementation for the command match
+table_vector <- c("apple", "banana", "orange", "grape")
+search_vector <- c("orange", "banana", "apple", "kiwi")
+
+positions <- fmatch(search_vector, table_vector)
+
+print(positions)
+
+microbenchmark(match(search_vector, table_vector), fmatch(search_vector, table_vector))
+
+# Customer to search for
+target_customer <- transactions$Customer[1]
+# Using match() to find the position of the first occurrence of the target customer
+position <- match(target_customer, transactions$Customer)
+position
+
+
+
+
+#Use cmpfun()from the compiler package to speed up your RFM function. How much time do you save?
+compiledRFMfunction <- cmpfun(RFMfunction)
+
+system.time({
+  rfmValues = RFMfunction(transactions, 20, 20, 60)
+})
+system.time({
+  rfmValues = compiledRFMfunction(transactions, 20, 20, 60)
+})
+
+
+
+
+#1. Detecting the (maximum) number of cores
+detectCores()
+#2. Register a "Cluster" with the desired number of cores
+# Usually you use the total # of cores minus 1 to leave some resources for the system
+cl <- makeCluster(9)
+registerDoParallel(cl)
+
+#Your marketing managers asks you to evaluate different weights for the RFM model.
+
+#Calculate the following weight distributions using the foreach package on multiple cores:
+#Unweighted
+#60-20-20
+#20-20-60
+
+
+
+result <- foreach(w = list(c(1,1,1), c(60,20,20), c(20,20,60)), .packages = c("data.table", "Hmisc")) %dopar% {
+  RFMfunction(transactions, w[1], w[2], w[3])
+}
+result
+stopCluster(cl)
+
+
+# function from teammate 1
+sum_of_squares_1 <- function(n) {
+  numbers <- 1:n
+  return(sum(numbers^2))
+}
+
+
+# function from teammate 2
+sum_of_squares_2 <- function(n) {
+  sum_squares <- 0
+  for (i in 1:n) {
+    sum_squares <- sum_squares + i^2
+  }
+  return(sum_squares)
+}
+
+
+microbenchmark(sum_of_squares_1(1000), sum_of_squares_2(1000))
